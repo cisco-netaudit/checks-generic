@@ -789,7 +789,7 @@ class ConfigAuditDiffCheck:
                 (
                     f'<div style="display: flex; gap: 8px; padding: 8px 0;">'
                     f'<a href="/render_html?path={html_path}" target="_blank" rel="noopener noreferrer">'
-                    f'<button type="button"><i class="fas fa-external-link-alt" style="font-size: 0.8em;"></i>'
+                    f'<button type="button"><i class="fas fa-external-link-alt"></i>'
                     f'View Comparision</button>'
                     f'</div>'
                 )
