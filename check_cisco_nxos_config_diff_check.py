@@ -741,15 +741,17 @@ class ConfigAuditDiffCheck:
         # For this example, we use a hardcoded template name.
         # In practice, this could be parameterized or determined based on device attributes.
         template_name = "nexus_ref"
+        template_path = TEMPLATE_MAP.get(template_name)
 
         if not TEMPLATE_MAP.get(template_name):
             raise ValueError(f"Template '{template_name}' not found in TEMPLATE_MAP.")
-        with open(TEMPLATE_MAP[template_name], "r") as f:
-            return f.read()
+
+        with open(template_path, "r") as f:
+            return f.read(), template_path
 
     def handle_initial(self, device, cmd, output):
         try:
-            base_cfg = self.load_template()
+            base_cfg, template_path = self.load_template()
 
             tmp_dir = tempfile.gettempdir()
             filename = f"config_diff_{uuid.uuid4().hex}.html"
@@ -783,10 +785,13 @@ class ConfigAuditDiffCheck:
                 f"{stats['removed']} removed, {stats['added']} added)"
             )
             self.RESULTS["comments"] = [
+                f'Comparing against template: {template_path}',
                 (
-                    f'<a href="/render_html?path={html_path}" '
-                    f'target="_blank" rel="noopener noreferrer">'
-                    f'View full configuration diff</a>'
+                    f'<div style="display: flex; gap: 8px; padding: 8px 0;">'
+                    f'<a href="/render_html?path={html_path}" target="_blank" rel="noopener noreferrer">'
+                    f'<button type="button"><i class="fas fa-external-link-alt" style="font-size: 0.8em;"></i>'
+                    f'View Comparision</button>'
+                    f'</div>'
                 )
             ]
         except Exception as e:
