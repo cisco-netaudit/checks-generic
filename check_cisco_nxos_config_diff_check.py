@@ -471,6 +471,51 @@ class ConfigDiffer:
 
     def compare(self):
         """ Compare the target and base configurations and store the results. """
+
+        def left_prefix_similarity(a, b):
+            a_tokens = a.split()
+            b_tokens = b.split()
+
+            max_len = max(len(a_tokens), len(b_tokens))
+            if max_len == 0:
+                return 0.0
+
+            match_len = 0
+            for at, bt in zip(a_tokens, b_tokens):
+                if at == bt:
+                    match_len += 1
+                else:
+                    break
+
+            return match_len / max_len
+
+        def token_jaccard(a, b):
+            a_set = set(a.split())
+            b_set = set(b.split())
+            if not a_set and not b_set:
+                return 1.0
+            return len(a_set & b_set) / len(a_set | b_set)
+
+        def cisco_similarity(a, b):
+            a_tokens = a.split()
+            b_tokens = b.split()
+
+            # Fast reject: different command families
+            if not a_tokens or not b_tokens or a_tokens[0] != b_tokens[0]:
+                return 0.0
+
+            # Fast reject: huge token length mismatch
+            if abs(len(a_tokens) - len(b_tokens)) > 4:
+                return 0.0
+
+            prefix_score = left_prefix_similarity(a, b)
+            token_score = token_jaccard(a, b)
+
+            # Strong left bias
+            return (0.7 * prefix_score) + (0.3 * token_score)
+
+        # ----------------- main logic -----------------
+
         self.target_parsed = self.parse(self.target_cfg)
         self.base_parsed = self.parse(self.base_cfg)
         self.used_target_lines = set()
@@ -487,35 +532,47 @@ class ConfigDiffer:
             ]
 
             best_match = None
-            best_score = -1
+            best_score = -1.0
 
             for candidate in candidates:
-                cfg2_string = candidate["string"]
-                score = textdistance.jaccard.normalized_similarity(base_string.strip(), cfg2_string.strip())
+                target_string = candidate["string"]
 
-                if base_is_parent and score == 1.0:
+                # Parent commands must match exactly
+                if base_is_parent:
+                    if base_string == target_string:
+                        best_match = candidate
+                        best_score = 1.0
+                        break
+                    continue
+
+                score = cisco_similarity(base_string, target_string)
+
+                if score > best_score:
                     best_match = candidate
                     best_score = score
-                    break
-                elif not base_is_parent and score >= 0.5 and score > best_score:
-                    best_match = candidate
-                    best_score = score
 
-            if best_match:
-                is_matched = True
+            # Threshold for non-parent commands
+            is_matched = best_match is not None and best_score >= 0.6
+
+            if is_matched:
                 self.used_target_lines.add(id(best_match))
-                diff_positions = [i for i in range(min(len(base_string), len(best_match["string"]))) if
-                                  base_string[i] != best_match["string"][i]]
-                diff_positions += list(range(min(len(base_string), len(best_match["string"])),
-                                             max(len(base_string), len(best_match["string"]))))
+
+                a = base_string
+                b = best_match["string"]
+                min_len = min(len(a), len(b))
+
+                diff_positions = [
+                                     i for i in range(min_len) if a[i] != b[i]
+                                 ] + list(range(min_len, max(len(a), len(b))))
+
+                matched_string = b
             else:
-                is_matched = False
-                best_match = {"string": ""}
+                matched_string = ""
                 diff_positions = list(range(len(base_string)))
 
             self.results[line_num] = {
                 "string": base_string,
-                "best_match": best_match["string"],
+                "best_match": matched_string,
                 "is_parent": base_is_parent,
                 "similarity_score": best_score,
                 "is_matched": is_matched,
@@ -523,7 +580,10 @@ class ConfigDiffer:
                 "path": base_path,
             }
 
+        # ----------------- added target-only lines -----------------
+
         next_line = max(self.results.keys(), default=0) + 1
+
         for target_item in self.target_parsed.values():
             if id(target_item) in self.used_target_lines:
                 continue
@@ -532,7 +592,7 @@ class ConfigDiffer:
                 "string": target_item["string"],
                 "best_match": "",
                 "is_parent": target_item["is_parent"],
-                "similarity_score": -2,
+                "similarity_score": -2.0,
                 "is_matched": False,
                 "diff_positions": list(range(len(target_item["string"]))),
                 "path": target_item["path"],
