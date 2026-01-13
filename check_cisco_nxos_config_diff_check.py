@@ -16,7 +16,7 @@ import uuid
 import textdistance
 from jinja2 import Environment, FileSystemLoader
 
-TEMPLATE_MAP = {}
+TEMPLATE_MAP = {} # Should be defined in the user's netaudit project directory
 DELIM = "\uF000"
 HTML_TEMPLATE = """<!DOCTYPE html>
 <html>
@@ -712,89 +712,6 @@ class DiffRenderer:
         return "".join(out)
 
 
-def get_diff(target_cfg_str, base_cfg_str):
-    """ Compare two config strings and return the HTML diff as a string. """
-    differ = ConfigDiffer(target_cfg_str, base_cfg_str)
-    differ.compare()
-
-    renderer = DiffRenderer(differ)
-    renderer.render()
-
-    return renderer.html
-
-
-def load_template(template_name):
-    """ Load the configuration template based on the template name. """
-    if template_name not in TEMPLATE_MAP:
-        raise ValueError(f"Template '{template_name}' not found in TEMPLATE_MAP.")
-    with open(TEMPLATE_MAP[template_name], "r") as f:
-        return f.read()
-
-
-def generate_audit(target_cfg, template_name):
-    """ Generate an audit by comparing the target configuration against a template. """
-    base_cfg = load_template(template_name)
-    html = get_diff(target_cfg, base_cfg)
-
-    tmp_dir = tempfile.gettempdir()
-    filename = f"config_diff_{uuid.uuid4().hex}.html"
-    html_path = os.path.join(tmp_dir, filename)
-
-    with open(html_path, "w", encoding="utf-8") as f:
-        f.write(html)
-
-    stats = {
-        "unchanged": len(re.findall(r'class="item\s+is-unchanged"', html)),
-        "changed": len(re.findall(r'class="item\s+is-changed"', html)),
-        "added": len(re.findall(r'class="item\s+is-added"', html)),
-        "removed": len(re.findall(r'class="item\s+is-removed"', html)),
-    }
-
-    baseline_total = (
-            stats["unchanged"] +
-            stats["changed"] +
-            stats["removed"]
-    )
-
-    match_percent = (
-        round((stats["unchanged"] / baseline_total) * 100)
-        if baseline_total else 100
-    )
-
-    if stats["changed"] == 0 and stats["removed"] == 0:
-        audit_status = "COMPLIANT"
-        status_code = 1
-    elif match_percent >= 80:
-        audit_status = "PARTIALLY COMPLIANT"
-        status_code = 4
-    else:
-        audit_status = "NON-COMPLIANT"
-        status_code = 3
-
-    observation = (
-        f"{audit_status} - "
-        f"Match {match_percent}% "
-        f"({stats['unchanged']} unchanged, "
-        f"{stats['changed']} changed, "
-        f"{stats['added']} added, "
-        f"{stats['removed']} removed)."
-    )
-
-    comments = [
-        (
-            f'<a href="/render_html?path={html_path}" '
-            f'target="_blank" rel="noopener noreferrer">'
-            f'View full configuration diff</a>'
-        )
-    ]
-
-    return {
-        "status": status_code,
-        "observation": observation,
-        "comments": comments,
-    }
-
-
 class ConfigAuditDiffCheck:
     NAME = "Configuration Difference Check"
     VERSION = "1.0.0"
@@ -820,13 +737,58 @@ class ConfigAuditDiffCheck:
             "comments": []
         }
 
+    def load_template(self):
+        # For this example, we use a hardcoded template name.
+        # In practice, this could be parameterized or determined based on device attributes.
+        template_name = "nexus_ref"
+
+        if not TEMPLATE_MAP.get(template_name):
+            raise ValueError(f"Template '{template_name}' not found in TEMPLATE_MAP.")
+        with open(TEMPLATE_MAP[template_name], "r") as f:
+            return f.read()
+
     def handle_initial(self, device, cmd, output):
         try:
-            audit_result = generate_audit(output, "nexus_ref")
-            self.RESULTS["status"] = audit_result["status"]
-            self.RESULTS["observation"] = audit_result["observation"]
-            self.RESULTS["comments"].extend(audit_result["comments"])
+            base_cfg = self.load_template()
 
+            tmp_dir = tempfile.gettempdir()
+            filename = f"config_diff_{uuid.uuid4().hex}.html"
+            html_path = os.path.join(tmp_dir, filename)
+
+            differ = ConfigDiffer(output, base_cfg)
+            differ.compare()
+            renderer = DiffRenderer(differ)
+            renderer.render()
+            renderer.save(html_path)
+
+            stats = {
+                "unchanged": len(re.findall(r'class="item\s+is-unchanged"', renderer.html)),
+                "changed": len(re.findall(r'class="item\s+is-changed"', renderer.html)),
+                "added": len(re.findall(r'class="item\s+is-added"', renderer.html)),
+                "removed": len(re.findall(r'class="item\s+is-removed"', renderer.html)),
+            }
+            baseline_total = (stats["unchanged"] + stats["changed"] + stats["removed"])
+            match_percent = (round((stats["unchanged"] / baseline_total) * 100) if baseline_total else 100)
+            if stats["changed"] == 0 and stats["removed"] == 0:
+                audit_results = ("COMPLIANT", 1)
+            elif match_percent >= 80:
+                audit_results = ("PARTIALLY COMPLIANT", 4)
+            else:
+                audit_results = ("NON-COMPLIANT", 3)
+
+            self.RESULTS["status"] = audit_results[1]
+            self.RESULTS["observation"] = (
+                f"{audit_results[0]} - Match {match_percent}% "
+                f"({stats['unchanged']} unchanged, {stats['changed']} changed, "
+                f"{stats['removed']} removed, {stats['added']} added)"
+            )
+            self.RESULTS["comments"] = [
+                (
+                    f'<a href="/render_html?path={html_path}" '
+                    f'target="_blank" rel="noopener noreferrer">'
+                    f'View full configuration diff</a>'
+                )
+            ]
         except Exception as e:
             self.RESULTS["status"] = 5
             self.RESULTS["observation"] = f"Error during configuration diff check: {str(e)}"
